@@ -1,6 +1,6 @@
 # DUCKOV_MODS
 
-《逃离鸭科夫》（Escape from Duckov）游戏 Mod 集合
+《逃离鸭科夫》（Escape from Duckov）游戏个人开发 Mod 集合
 
 ## Mod 列表
 
@@ -19,20 +19,7 @@
 
 ## 说明
 
-本仓库包含所有已开发和维护的 Duckov 游戏 Mod。每个 Mod 都是独立的子目录，包含完整的源代码、编译项目和说明文档。
+本仓库包含本人已开发和维护的 Duckov 游戏 Mod。每个 Mod 都是独立的子目录，包含主要代码和说明文档。
 
-## 安装
 
-1. 下载对应 Mod 目录下的 `*.dll` 文件
-2. 将文件复制到游戏 Mod 目录：`E:\Steam\steamapps\common\Escape from Duckov\Duckov_Data\Mods\[ModName]\`
-3. 确保 `info.ini` 文件也在同一目录
-4. 启动游戏
-
-## 开发
-
-各 Mod 使用 .NET SDK 开发，项目文件为 `*.csproj`。编译后会自动生成 DLL 文件在 `bin/Debug/netstandard2.1/` 目录下。
-
-## 许可证
-
-各 Mod 具体许可证请查看各自目录下的文件。
 
