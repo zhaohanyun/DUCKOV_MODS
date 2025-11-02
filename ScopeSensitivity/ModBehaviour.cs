@@ -166,22 +166,23 @@ namespace ScopeSensitivity
             // 获取倍镜的 ADSAimDistanceFactor
             float adsAimDistanceFactor = gun.ADSAimDistanceFactor;
             
-            // 用户反馈：第一版调整方向对，但近距离后坐力几乎为0（0~6），希望范围是4~6
-            // 用户最新需求：近距离再减小20%，远距离不变
-            // 需要根据瞄准距离调整，而不是简单地根据倍镜因子
-            
             // 获取瞄准距离
             Vector3 aimPoint = inputManager.InputAimPoint;
             Vector3 muzzlePos = gun.muzzle.position;
             float aimDistance = Vector3.Distance(aimPoint, muzzlePos);
             
-            const float REFERENCE_FACTOR = 1.5f; // 参考倍镜因子（2倍镜）
-            if (adsAimDistanceFactor > REFERENCE_FACTOR)
+            const float LOW_SCOPE_FACTOR = 1.5f; // 低于此值不调整
+            
+            if (adsAimDistanceFactor > LOW_SCOPE_FACTOR)
             {
-                float factorRatio = adsAimDistanceFactor / REFERENCE_FACTOR;
+                // 使用线性插值：factor 在 1.5 到 4.24 之间，scale 从 1.0 到 1.5
+                // 这样 4.24 时和原方案一致，且渐进过渡
+                const float HIGH_SCOPE_FACTOR = 4.24f;
+                const float MIN_SCALE = 1.0f;
+                const float MAX_SCALE = 1.5f;
                 
-                // 使用对数缩放作为基础（已验证有效）
-                float baseScaleFactor = Mathf.Log(factorRatio, 2f);
+                float t = Mathf.InverseLerp(LOW_SCOPE_FACTOR, HIGH_SCOPE_FACTOR, adsAimDistanceFactor);
+                float baseScaleFactor = Mathf.Lerp(MIN_SCALE, MAX_SCALE, t);
                 
                 // 根据瞄准距离额外调整：近距离再减小20%，远距离不变
                 // 定义近距离和远距离的阈值（可以根据实际游戏调整）
