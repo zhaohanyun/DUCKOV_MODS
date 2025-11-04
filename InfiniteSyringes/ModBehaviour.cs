@@ -82,8 +82,8 @@ namespace InfiniteSyringes
         
         private void ProtectNeedleIfNeeded(Item item)
         {
-            // 检查是否是针类物品：支持多语言判断（繁中、英文），大小写不敏感
-            bool isNeedle = IsNeedleItem(item.DisplayName) && item.Stackable;
+            // 检查是否是针类物品：使用游戏原生Tags判断
+            bool isNeedle = IsNeedleItem(item) && item.Stackable;
             
             if (isNeedle && !protectedNeedles.Contains(item))
             {
@@ -99,30 +99,17 @@ namespace InfiniteSyringes
         }
         
         /// <summary>
-        /// 判断物品名称是否为针剂类物品（支持多语言，大小写不敏感）
-        /// 支持：繁体中文（xx針、镇痛劑）、英文（xx Injector、Painkiller）
+        /// 判断物品是否为针剂类物品
+        /// 根据游戏原生Tags判断：检查是否包含 "Injector" tag
+        /// 与游戏针剂包的过滤逻辑完全一致，语言无关，准确可靠
         /// </summary>
-        private bool IsNeedleItem(string displayName)
+        private bool IsNeedleItem(Item item)
         {
-            if (string.IsNullOrEmpty(displayName))
+            if (item == null || item.Tags == null)
                 return false;
             
-            // 转换为小写以便大小写不敏感比较
-            string lowerName = displayName.ToLowerInvariant();
-            
-            // 繁体中文关键词
-            if (displayName.Contains("針") || displayName.Contains("劑"))
-                return true;
-            
-            // 简体中文关键词（向后兼容）
-            if (displayName.Contains("针") || displayName.Contains("剂"))
-                return true;
-            
-            // 英文关键词（大小写不敏感）
-            if (lowerName.Contains("injector") || lowerName.Contains("painkiller"))
-                return true;
-            
-            return false;
+            // 只检查 Injector tag（与游戏针剂包逻辑一致）
+            return item.Tags.Contains("Injector");
         }
 
         void OnDestroy()
@@ -235,4 +222,3 @@ namespace InfiniteSyringes
         }
     }
 }
-
