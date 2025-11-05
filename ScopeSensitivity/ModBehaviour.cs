@@ -1,9 +1,12 @@
 using System;
+using System.Collections;
 using System.Reflection;
 using UnityEngine;
 
 namespace ScopeSensitivity
 {
+    // Update 在 CharacterInputControl 之前执行（处理灵敏度和后座力）
+    // LateUpdate 在 GameCamera 之后执行（处理开镜漂移）
     [DefaultExecutionOrder(-100)]
     public class ModBehaviour : Duckov.Modding.ModBehaviour
     {
@@ -29,12 +32,53 @@ namespace ScopeSensitivity
         
         // 记录上次调整后座力的时间，确保每次新后座力只调整一次
         private float lastRecoilAdjustTime = 0f;
+        
+        // GameCamera 反射信息（用于取消开镜漂移）
+        private Type? gameCameraType;
+        private FieldInfo? offsetFromTargetXField;
+        private FieldInfo? offsetFromTargetZField;
+        private FieldInfo? cameraRightVectorField;
+        private FieldInfo? cameraForwardVectorField;
+        private FieldInfo? maxAimOffsetField;
+        private FieldInfo? aimOffsetDistanceFactorField;
+        private FieldInfo? lerpSpeedField;
+        private MethodInfo? screenPointToCharacterPlaneMethod;
+        private FieldInfo? mianCameraArmField;
+        private bool gameCameraReflectionCached = false;
+        
+        // 保存原始 lerpSpeed，用于恢复
+        private float originalLerpSpeed = 12f;
+        
+        // 记录上次的 AdsValue，用于检测开镜开始
+        private float lastAdsValue = 0f;
+        
+        // 标记是否正在开镜过程中（用于持续强制设置偏移）
+        private bool isAdsTransitioning = false;
+        
+        // 开镜时的目标偏移值（开镜开始时计算一次，然后持续应用）
+        private float adsTargetOffsetX = 0f;
+        private float adsTargetOffsetZ = 0f;
+        
+        // 上一帧的鼠标位置（用于计算瞬时移动速度）
+        private Vector2 lastMousePos = Vector2.zero;
+        private Vector2 adsStartMousePos = Vector2.zero;
+        
+        // 开镜开始时的 aimOffsetDistanceFactor（固定使用，避免开镜过程中变化导致漂移）
+        private float adsStartDistanceFactor = 1f;
+        
+        // 开镜开始时的最大偏移距离（固定使用，避免开镜过程中变化导致限制不一致）
+        private float adsStartMaxOffset = 25f;
+        
+        // 边缘滚动配置
+        private float edgeScrollThreshold = 0.8f;   // 距离中心多远开始滚动
+        private float edgeScrollSpeed = 50f;        // 边缘滚动速度（恢复到50）
 
         void Start()
         {
             // 缓存反射信息
             CacheReflectionInfo();
         }
+        
 
         private void CacheReflectionInfo()
         {
@@ -67,12 +111,92 @@ namespace ScopeSensitivity
             {
                 recoilReflectionCached = true;
             }
+            
+            // 获取 GameCamera 类型
+            gameCameraType = typeof(GameCamera);
+            
+            // 获取相机偏移相关字段
+            offsetFromTargetXField = gameCameraType.GetField("offsetFromTargetX", 
+                BindingFlags.NonPublic | BindingFlags.Instance);
+            
+            offsetFromTargetZField = gameCameraType.GetField("offsetFromTargetZ", 
+                BindingFlags.NonPublic | BindingFlags.Instance);
+            
+            cameraRightVectorField = gameCameraType.GetField("cameraRightVector", 
+                BindingFlags.NonPublic | BindingFlags.Instance);
+            
+            cameraForwardVectorField = gameCameraType.GetField("cameraForwardVector", 
+                BindingFlags.NonPublic | BindingFlags.Instance);
+            
+            maxAimOffsetField = gameCameraType.GetField("maxAimOffset", 
+                BindingFlags.NonPublic | BindingFlags.Instance);
+            
+            aimOffsetDistanceFactorField = gameCameraType.GetField("aimOffsetDistanceFactor", 
+                BindingFlags.NonPublic | BindingFlags.Instance);
+            
+            mianCameraArmField = gameCameraType.GetField("mianCameraArm", 
+                BindingFlags.Public | BindingFlags.Instance);
+            
+            lerpSpeedField = gameCameraType.GetField("lerpSpeed", 
+                BindingFlags.NonPublic | BindingFlags.Instance);
+            
+            // 获取 ScreenPointToCharacterPlane 方法
+            screenPointToCharacterPlaneMethod = gameCameraType.GetMethod("ScreenPointToCharacterPlane", 
+                BindingFlags.NonPublic | BindingFlags.Instance);
+            
+            if (offsetFromTargetXField != null && offsetFromTargetZField != null && 
+                cameraRightVectorField != null && cameraForwardVectorField != null &&
+                maxAimOffsetField != null && aimOffsetDistanceFactorField != null &&
+                lerpSpeedField != null && screenPointToCharacterPlaneMethod != null && mianCameraArmField != null)
+            {
+                gameCameraReflectionCached = true;
+            }
+            else
+            {
+                Debug.LogError("[ScopeSensitivity] GameCamera 反射缓存失败！");
+            }
         }
 
         void Update()
         {
             // 使用 DefaultExecutionOrder(-100) 确保在 CharacterInputControl.Update 之前执行
             // Unity 会按照脚本执行顺序调用
+            
+            var player = CharacterMainControl.Main;
+            if (player == null)
+            {
+                return;
+            }
+            
+            // 优先处理开镜漂移控制（在游戏计算之前）
+            if (gameCameraReflectionCached)
+            {
+                CheckAndUpdateAdsState(player);
+                
+                // 如果正在接管，禁用游戏的 lerp（让游戏无法平滑到计算的偏移）
+                if (isAdsTransitioning)
+                {
+                    GameCamera? gameCamera = LevelManager.Instance?.GameCamera;
+                    if (gameCamera != null && lerpSpeedField != null)
+                    {
+                        lerpSpeedField.SetValue(gameCamera, 0f);
+                    }
+                    
+                    SetAdsOffset(player);
+                }
+                else
+                {
+                    // 恢复 lerpSpeed
+                    if (originalLerpSpeed > 0)
+                    {
+                        GameCamera? gameCamera = LevelManager.Instance?.GameCamera;
+                        if (gameCamera != null && lerpSpeedField != null)
+                        {
+                            lerpSpeedField.SetValue(gameCamera, originalLerpSpeed);
+                        }
+                    }
+                }
+            }
             
             if (!reflectionCached)
             {
@@ -81,12 +205,6 @@ namespace ScopeSensitivity
             
             CharacterInputControl inputControl = CharacterInputControl.Instance;
             if (inputControl == null)
-            {
-                return;
-            }
-            
-            var player = CharacterMainControl.Main;
-            if (player == null)
             {
                 return;
             }
@@ -131,6 +249,7 @@ namespace ScopeSensitivity
                 AdjustRecoilByDistance(player, gun);
             }
         }
+        
         
         private void AdjustRecoilByDistance(CharacterMainControl player, ItemAgent_Gun gun)
         {
@@ -237,6 +356,184 @@ namespace ScopeSensitivity
             }
             
             return false;
+        }
+        
+        private void CheckAndUpdateAdsState(CharacterMainControl player)
+        {
+            GameCamera? gameCamera = LevelManager.Instance?.GameCamera;
+            InputManager? inputManager = LevelManager.Instance?.InputManager;
+            if (gameCamera == null || inputManager == null)
+            {
+                return;
+            }
+            
+            float currentAdsValue = player.AdsValue;
+            
+            // 检测开镜开始：AdsValue 从 0 开始增加
+            if (lastAdsValue < 0.01f && currentAdsValue > 0.01f && !isAdsTransitioning)
+            {
+                // 记录开镜开始时的参数
+                try
+                {
+                    adsTargetOffsetX = (float)(offsetFromTargetXField?.GetValue(gameCamera) ?? 0f);
+                    adsTargetOffsetZ = (float)(offsetFromTargetZField?.GetValue(gameCamera) ?? 0f);
+                    adsStartMousePos = inputManager.MousePos;
+                    lastMousePos = inputManager.MousePos;  // 初始化上一帧鼠标位置
+                    
+                    // 记录开镜开始时的 aimOffsetDistanceFactor（防止开镜过程中变化）
+                    adsStartDistanceFactor = (float)(aimOffsetDistanceFactorField?.GetValue(gameCamera) ?? 1f);
+                    
+                    // 计算开镜完成后的最大偏移距离（基于武器的 ADSAimDistanceFactor）
+                    // 游戏公式：maxAimOffset = defaultAimOffset * gun.ADSAimDistanceFactor（完全开镜时）
+                    var gun = player.GetGun();
+                    if (gun != null)
+                    {
+                        const float defaultAimOffset = 5f; // 游戏中的默认值
+                        adsStartMaxOffset = defaultAimOffset * gun.ADSAimDistanceFactor;
+                    }
+                    else
+                    {
+                        adsStartMaxOffset = 25f; // 无武器时的默认值
+                    }
+                    
+                    // 保存原始 lerpSpeed
+                    if (lerpSpeedField != null)
+                    {
+                        float currentLerpSpeed = (float)(lerpSpeedField.GetValue(gameCamera) ?? 0f);
+                        if (currentLerpSpeed > 0)
+                        {
+                            originalLerpSpeed = currentLerpSpeed;
+                        }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Debug.LogError($"[ScopeSensitivity调试] 获取开镜参数时出错: {ex.Message}");
+                }
+                
+                isAdsTransitioning = true;
+            }
+            
+            // 检测关闭瞄准镜：AdsValue 回到接近 0
+            if (isAdsTransitioning && currentAdsValue < 0.01f)
+            {
+                isAdsTransitioning = false;
+            }
+            
+            lastAdsValue = currentAdsValue;
+        }
+        
+        private void SetAdsOffset(CharacterMainControl player)
+        {
+            GameCamera? gameCamera = LevelManager.Instance?.GameCamera;
+            InputManager? inputManager = LevelManager.Instance?.InputManager;
+            if (gameCamera == null || inputManager == null || !isAdsTransitioning)
+            {
+                return;
+            }
+            
+            float currentAdsValue = player.AdsValue;
+            if (currentAdsValue <= 0.01f)
+            {
+                return;
+            }
+            
+            try
+            {
+                // 读取设置前的值
+                float beforeOffsetX = (float)(offsetFromTargetXField?.GetValue(gameCamera) ?? 0f);
+                float beforeOffsetZ = (float)(offsetFromTargetZField?.GetValue(gameCamera) ?? 0f);
+                float beforeMaxAimOffset = (float)(maxAimOffsetField?.GetValue(gameCamera) ?? 0f);
+                float beforeDistanceFactor = (float)(aimOffsetDistanceFactorField?.GetValue(gameCamera) ?? 0f);
+                
+                // 使用开镜开始时计算的固定最大偏移距离（不再动态读取，避免开镜过程中变化导致限制问题）
+                
+                // 基于鼠标移动的增量来调整偏移
+                Vector2 mousePos = inputManager.MousePos;
+                Vector2 mouseDelta = mousePos - adsStartMousePos;
+                
+                // 计算瞬时鼠标速度（本帧相对上一帧的移动）
+                Vector2 mouseVelocity = mousePos - lastMousePos;
+                lastMousePos = mousePos;
+                
+                // 使用瞬时速度来更新基准偏移，而不是累积delta
+                float velocityScale = 0.005f * adsStartDistanceFactor;
+                
+                // 回拉跟随：当鼠标在二维空间中往回移动时（朝向中心方向），镜头也能跟随往回移
+                // 分别判断X轴和Z轴是否在回拉
+                bool isPullingBackX = false;
+                bool isPullingBackZ = false;
+                
+                float offsetLength = Mathf.Sqrt(adsTargetOffsetX * adsTargetOffsetX + adsTargetOffsetZ * adsTargetOffsetZ);
+                if (offsetLength > 0.1f) // 只有当镜头有明显偏移时才判断回拉
+                {
+                    // X轴回拉判断：鼠标X方向移动与偏移X方向相反
+                    isPullingBackX = (adsTargetOffsetX > 0 && mouseVelocity.x < 0) || (adsTargetOffsetX < 0 && mouseVelocity.x > 0);
+                    // Z轴回拉判断：鼠标Y方向移动与偏移Z方向相反
+                    isPullingBackZ = (adsTargetOffsetZ > 0 && mouseVelocity.y < 0) || (adsTargetOffsetZ < 0 && mouseVelocity.y > 0);
+                }
+                
+                // 回拉时使用更大的系数，让镜头更容易跟随
+                // Z轴（竖直方向）使用更大的倍率
+                float pullBackMultiplierX = 5.0f;
+                float pullBackMultiplierZ = 8.0f;
+                
+                float finalScaleX = isPullingBackX ? velocityScale * pullBackMultiplierX : velocityScale;
+                float finalScaleZ = isPullingBackZ ? velocityScale * pullBackMultiplierZ : velocityScale;
+                
+                adsTargetOffsetX += mouseVelocity.x * finalScaleX;
+                adsTargetOffsetZ += mouseVelocity.y * finalScaleZ;
+                
+                // 边缘滚动：当鼠标靠近屏幕边缘时，自动扩展镜头
+                Vector2 screenSize = new Vector2(Screen.width, Screen.height);
+                Vector2 screenCenter = screenSize / 2f;
+                Vector2 normalizedPos = (mousePos - screenCenter) / (screenSize / 2f); // -1 to 1
+                
+                // 计算边缘滚动增量（使用平方曲线，让速度更平滑递增）
+                // 取消蓄力倍率，保持一致的边缘滚动速度
+                float adsSpeedMultiplier = 1.0f;
+                
+                if (Mathf.Abs(normalizedPos.x) > edgeScrollThreshold)
+                {
+                    float excess = (Mathf.Abs(normalizedPos.x) - edgeScrollThreshold) / (1f - edgeScrollThreshold);
+                    excess = excess * excess; // 平方曲线，让加速更平滑
+                    float scrollDelta = Mathf.Sign(normalizedPos.x) * excess * edgeScrollSpeed * adsSpeedMultiplier * Time.deltaTime;
+                    adsTargetOffsetX += scrollDelta;
+                }
+                
+                if (Mathf.Abs(normalizedPos.y) > edgeScrollThreshold)
+                {
+                    float excess = (Mathf.Abs(normalizedPos.y) - edgeScrollThreshold) / (1f - edgeScrollThreshold);
+                    excess = excess * excess; // 平方曲线，让加速更平滑
+                    float scrollDelta = Mathf.Sign(normalizedPos.y) * excess * edgeScrollSpeed * adsSpeedMultiplier * Time.deltaTime;
+                    adsTargetOffsetZ += scrollDelta;
+                }
+                
+                // 直接使用基准偏移（已包含瞬时鼠标移动）
+                float targetOffsetX = adsTargetOffsetX;
+                float targetOffsetZ = adsTargetOffsetZ;
+                
+                // 限制偏移距离在最大范围内（保持和游戏原本的视野范围一致）
+                float currentOffsetMagnitude = Mathf.Sqrt(targetOffsetX * targetOffsetX + targetOffsetZ * targetOffsetZ);
+                if (currentOffsetMagnitude > adsStartMaxOffset)
+                {
+                    float scale = adsStartMaxOffset / currentOffsetMagnitude;
+                    targetOffsetX *= scale;
+                    targetOffsetZ *= scale;
+                    
+                    // 同时也更新基准偏移，避免累积超出范围
+                    adsTargetOffsetX = targetOffsetX;
+                    adsTargetOffsetZ = targetOffsetZ;
+                }
+                
+                // 强制设置偏移（游戏无法 lerp 覆盖，因为 lerpSpeed=0）
+                offsetFromTargetXField?.SetValue(gameCamera, targetOffsetX);
+                offsetFromTargetZField?.SetValue(gameCamera, targetOffsetZ);
+            }
+            catch (Exception ex)
+            {
+                Debug.LogError($"[ScopeSensitivity调试] 接管准星时出错: {ex.Message}");
+            }
         }
     }
 }
