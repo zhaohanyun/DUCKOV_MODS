@@ -22,12 +22,15 @@ namespace ScopeSensitivity
         private FieldInfo? mouseDeltaField;
         private bool reflectionCached = false;
         
-        // 后座力调整的反射信息
+        // 后座力调整与瞄准同步的反射信息
         private Type? inputManagerType;
         private FieldInfo? recoilVField;
         private FieldInfo? recoilHField;
         private FieldInfo? recoilGunField;
         private FieldInfo? newRecoilField;
+        private FieldInfo? inputAimPointField;
+        private FieldInfo? aimScreenPointField;
+        private FieldInfo? aimMousePosCacheField;
         private bool recoilReflectionCached = false;
         
         // 记录上次调整后座力的时间，确保每次新后座力只调整一次
@@ -58,12 +61,18 @@ namespace ScopeSensitivity
         // 开镜时的目标偏移值（开镜开始时计算一次，然后持续应用）
         private float adsTargetOffsetX = 0f;
         private float adsTargetOffsetZ = 0f;
+        private float adsStartOffsetX = 0f;
+        private float adsStartOffsetZ = 0f;
         
         // 开镜开始时的 aimOffsetDistanceFactor（固定使用，避免开镜过程中变化导致漂移）
         private float adsStartDistanceFactor = 1f;
         
         // 开镜开始时的最大偏移距离（固定使用，避免开镜过程中变化导致限制不一致）
         private float adsStartMaxOffset = 25f;
+
+        // 开镜开始时的瞄准点（用于保持退出开镜时的瞄准方向）
+        private Vector3 adsStartAimPoint = Vector3.zero;
+        private Vector2 adsStartAimScreenPoint = Vector2.zero;
         
         // 边缘滚动配置
         private float edgeScrollThreshold = 0.8f;   // 距离中心多远开始滚动
@@ -101,6 +110,12 @@ namespace ScopeSensitivity
             recoilGunField = inputManagerType.GetField("recoilGun", 
                 BindingFlags.NonPublic | BindingFlags.Instance);
             newRecoilField = inputManagerType.GetField("newRecoil", 
+                BindingFlags.NonPublic | BindingFlags.Instance);
+            inputAimPointField = inputManagerType.GetField("inputAimPoint",
+                BindingFlags.NonPublic | BindingFlags.Instance);
+            aimScreenPointField = inputManagerType.GetField("aimScreenPoint",
+                BindingFlags.NonPublic | BindingFlags.Instance);
+            aimMousePosCacheField = inputManagerType.GetField("_aimMousePosCache",
                 BindingFlags.NonPublic | BindingFlags.Instance);
             
             if (recoilVField != null && recoilHField != null && recoilGunField != null && newRecoilField != null)
@@ -373,6 +388,8 @@ namespace ScopeSensitivity
                 {
                     adsTargetOffsetX = (float)(offsetFromTargetXField?.GetValue(gameCamera) ?? 0f);
                     adsTargetOffsetZ = (float)(offsetFromTargetZField?.GetValue(gameCamera) ?? 0f);
+                    adsStartOffsetX = adsTargetOffsetX;
+                    adsStartOffsetZ = adsTargetOffsetZ;
                     
                     // 记录开镜开始时的 aimOffsetDistanceFactor（防止开镜过程中变化）
                     adsStartDistanceFactor = (float)(aimOffsetDistanceFactorField?.GetValue(gameCamera) ?? 1f);
@@ -399,6 +416,9 @@ namespace ScopeSensitivity
                             originalLerpSpeed = currentLerpSpeed;
                         }
                     }
+
+                    adsStartAimPoint = inputManager.InputAimPoint;
+                    adsStartAimScreenPoint = inputManager.AimScreenPoint;
                 }
                 catch (Exception ex)
                 {
@@ -496,6 +516,40 @@ namespace ScopeSensitivity
                 // 强制设置偏移（游戏无法 lerp 覆盖，因为 lerpSpeed=0）
                 offsetFromTargetXField?.SetValue(gameCamera, targetOffsetX);
                 offsetFromTargetZField?.SetValue(gameCamera, targetOffsetZ);
+
+                // 同步 InputManager 与角色的瞄准点，避免退出开镜时发生回弹
+                float distanceFactor = Mathf.Max(adsStartDistanceFactor, 0.0001f);
+                Vector3 aimPoint = adsStartAimPoint;
+
+                if (cameraRightVectorField != null && cameraForwardVectorField != null)
+                {
+                    Vector3 cameraRight = (Vector3)(cameraRightVectorField.GetValue(gameCamera) ?? Vector3.right);
+                    Vector3 cameraForward = (Vector3)(cameraForwardVectorField.GetValue(gameCamera) ?? Vector3.forward);
+                    Vector3 aimOffset = cameraRight * ((targetOffsetX - adsStartOffsetX) / distanceFactor) +
+                                        cameraForward * ((targetOffsetZ - adsStartOffsetZ) / distanceFactor);
+
+                    // 保持瞄准平面高度一致
+                    aimPoint = adsStartAimPoint + aimOffset;
+                    aimPoint.y = adsStartAimPoint.y;
+                }
+
+                if (inputAimPointField != null)
+                {
+                    inputAimPointField.SetValue(inputManager, aimPoint);
+                }
+
+                player.SetAimPoint(aimPoint);
+
+                Camera? renderCamera = gameCamera.renderCamera;
+                if (renderCamera != null)
+                {
+                    Vector3 aimScreenPoint = renderCamera.WorldToScreenPoint(aimPoint);
+                    Vector2 aimScreenPoint2D = new Vector2(aimScreenPoint.x, aimScreenPoint.y);
+
+                    aimScreenPointField?.SetValue(inputManager, aimScreenPoint2D);
+                    aimMousePosCacheField?.SetValue(inputManager, aimScreenPoint2D);
+                    inputManager.SetMousePosition(aimScreenPoint2D);
+                }
             }
             catch (Exception ex)
             {
