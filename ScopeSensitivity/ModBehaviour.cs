@@ -59,10 +59,6 @@ namespace ScopeSensitivity
         private float adsTargetOffsetX = 0f;
         private float adsTargetOffsetZ = 0f;
         
-        // 上一帧的鼠标位置（用于计算瞬时移动速度）
-        private Vector2 lastMousePos = Vector2.zero;
-        private Vector2 adsStartMousePos = Vector2.zero;
-        
         // 开镜开始时的 aimOffsetDistanceFactor（固定使用，避免开镜过程中变化导致漂移）
         private float adsStartDistanceFactor = 1f;
         
@@ -377,8 +373,6 @@ namespace ScopeSensitivity
                 {
                     adsTargetOffsetX = (float)(offsetFromTargetXField?.GetValue(gameCamera) ?? 0f);
                     adsTargetOffsetZ = (float)(offsetFromTargetZField?.GetValue(gameCamera) ?? 0f);
-                    adsStartMousePos = inputManager.MousePos;
-                    lastMousePos = inputManager.MousePos;  // 初始化上一帧鼠标位置
                     
                     // 记录开镜开始时的 aimOffsetDistanceFactor（防止开镜过程中变化）
                     adsStartDistanceFactor = (float)(aimOffsetDistanceFactorField?.GetValue(gameCamera) ?? 1f);
@@ -448,43 +442,16 @@ namespace ScopeSensitivity
                 
                 // 使用开镜开始时计算的固定最大偏移距离（不再动态读取，避免开镜过程中变化导致限制问题）
                 
-                // 基于鼠标移动的增量来调整偏移
-                Vector2 mousePos = inputManager.MousePos;
-                Vector2 mouseDelta = mousePos - adsStartMousePos;
+                // 使用游戏归一化的增量
+                CharacterInputControl inputControl = CharacterInputControl.Instance;
+                Vector2 gameMouseDelta = (Vector2)(mouseDeltaField?.GetValue(inputControl) ?? Vector2.zero);
+                float velocityScale = 0.01f * adsStartDistanceFactor;
                 
-                // 计算瞬时鼠标速度（本帧相对上一帧的移动）
-                Vector2 mouseVelocity = mousePos - lastMousePos;
-                lastMousePos = mousePos;
-                
-                // 使用瞬时速度来更新基准偏移，而不是累积delta
-                float velocityScale = 0.005f * adsStartDistanceFactor;
-                
-                // 回拉跟随：当鼠标在二维空间中往回移动时（朝向中心方向），镜头也能跟随往回移
-                // 分别判断X轴和Z轴是否在回拉
-                bool isPullingBackX = false;
-                bool isPullingBackZ = false;
-                
-                float offsetLength = Mathf.Sqrt(adsTargetOffsetX * adsTargetOffsetX + adsTargetOffsetZ * adsTargetOffsetZ);
-                if (offsetLength > 0.1f) // 只有当镜头有明显偏移时才判断回拉
-                {
-                    // X轴回拉判断：鼠标X方向移动与偏移X方向相反
-                    isPullingBackX = (adsTargetOffsetX > 0 && mouseVelocity.x < 0) || (adsTargetOffsetX < 0 && mouseVelocity.x > 0);
-                    // Z轴回拉判断：鼠标Y方向移动与偏移Z方向相反
-                    isPullingBackZ = (adsTargetOffsetZ > 0 && mouseVelocity.y < 0) || (adsTargetOffsetZ < 0 && mouseVelocity.y > 0);
-                }
-                
-                // 回拉时使用更大的系数，让镜头更容易跟随
-                // Z轴（竖直方向）使用更大的倍率
-                float pullBackMultiplierX = 5.0f;
-                float pullBackMultiplierZ = 8.0f;
-                
-                float finalScaleX = isPullingBackX ? velocityScale * pullBackMultiplierX : velocityScale;
-                float finalScaleZ = isPullingBackZ ? velocityScale * pullBackMultiplierZ : velocityScale;
-                
-                adsTargetOffsetX += mouseVelocity.x * finalScaleX;
-                adsTargetOffsetZ += mouseVelocity.y * finalScaleZ;
+                adsTargetOffsetX += gameMouseDelta.x * velocityScale;
+                adsTargetOffsetZ += gameMouseDelta.y * velocityScale;
                 
                 // 边缘滚动：当鼠标靠近屏幕边缘时，自动扩展镜头
+                Vector2 mousePos = inputManager.MousePos;
                 Vector2 screenSize = new Vector2(Screen.width, Screen.height);
                 Vector2 screenCenter = screenSize / 2f;
                 Vector2 normalizedPos = (mousePos - screenCenter) / (screenSize / 2f); // -1 to 1
