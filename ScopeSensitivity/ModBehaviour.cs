@@ -74,6 +74,15 @@ namespace ScopeSensitivity
         private int adsLogFrameCount = 0;
         // 长期日志计数（每 60 帧输出一次，便于观察连续拖拽）
         private int adsLongLogFrameCount = 0;
+
+        // 在产生新后座力后的短时间内抑制边缘滚动（用秒计，帧率无关）
+        private float recoilSuppressTimer = 0f;
+        private const float RECOIL_SUPPRESS_DURATION = 0.25f; // 0.25 秒
+
+        // 边缘滚动在连续射击时快速衰减；并限制整个 ADS 期间因边缘滚动产生的位移不超过 10m
+        private const float EDGE_SCROLL_RECOIL_DAMP = 0.1f;   // 后座期衰减系数
+        private const float EDGE_SCROLL_MAX_ACCUM = 3f;       // 最大累计位移（世界单位）
+        private float edgeScrollAccum = 0f;                    // 本次 ADS 已累计的边缘滚动位移
         
         // 边缘滚动配置
         private float edgeScrollThreshold = 0.8f;   // 距离中心多远开始滚动
@@ -280,6 +289,9 @@ namespace ScopeSensitivity
                 return;
             }
             
+            // 产生新后座力：在接下来一小段时间暂停边缘滚动
+            recoilSuppressTimer = RECOIL_SUPPRESS_DURATION;
+
             // 获取当前后座力值
             float recoilV = (float)(recoilVField?.GetValue(inputManager) ?? 0f);
             float recoilH = (float)(recoilHField?.GetValue(inputManager) ?? 0f);
@@ -428,6 +440,9 @@ namespace ScopeSensitivity
                 isAdsTransitioning = true;
                 adsExitLogged = false;
                 adsLogFrameCount = 0;
+
+                // 进入 ADS 时重置边缘滚动累计量
+                edgeScrollAccum = 0f;
             }
             
             // 检测关闭瞄准镜：AdsValue 回到接近 0
@@ -514,24 +529,50 @@ namespace ScopeSensitivity
                 Vector2 screenSize = new Vector2(Screen.width, Screen.height);
                 Vector2 screenCenter = screenSize / 2f;
                 Vector2 normalizedPos = (mousePos - screenCenter) / (screenSize / 2f); // -1 to 1
-                
+
                 // 计算边缘滚动增量（使用平方曲线，让速度更平滑递增）
-                // 取消蓄力倍率，保持一致的边缘滚动速度
                 float adsSpeedMultiplier = 1.0f;
-                
+
+                float ApplyScrollWithLimit(float delta)
+                {
+                    float remaining = EDGE_SCROLL_MAX_ACCUM - edgeScrollAccum;
+                    if (remaining <= 0f)
+                    {
+                        return 0f; // 已达上限
+                    }
+                    if (Mathf.Abs(delta) > remaining)
+                    {
+                        delta = Mathf.Sign(delta) * remaining;
+                    }
+                    edgeScrollAccum += Mathf.Abs(delta);
+                    return delta;
+                }
+
+                bool suppressEdgeByRecoil = recoilSuppressTimer > 0f;
+
                 if (Mathf.Abs(normalizedPos.x) > edgeScrollThreshold)
                 {
                     float excess = (Mathf.Abs(normalizedPos.x) - edgeScrollThreshold) / (1f - edgeScrollThreshold);
-                    excess = excess * excess; // 平方曲线，让加速更平滑
+                    excess = excess * excess;
                     float scrollDelta = Mathf.Sign(normalizedPos.x) * excess * edgeScrollSpeed * adsSpeedMultiplier * Time.deltaTime;
+                    if (suppressEdgeByRecoil)
+                    {
+                        scrollDelta *= EDGE_SCROLL_RECOIL_DAMP; // 强力衰减
+                    }
+                    scrollDelta = ApplyScrollWithLimit(scrollDelta);
                     adsTargetOffsetX += scrollDelta;
                 }
-                
+
                 if (Mathf.Abs(normalizedPos.y) > edgeScrollThreshold)
                 {
                     float excess = (Mathf.Abs(normalizedPos.y) - edgeScrollThreshold) / (1f - edgeScrollThreshold);
-                    excess = excess * excess; // 平方曲线，让加速更平滑
+                    excess = excess * excess;
                     float scrollDelta = Mathf.Sign(normalizedPos.y) * excess * edgeScrollSpeed * adsSpeedMultiplier * Time.deltaTime;
+                    if (suppressEdgeByRecoil)
+                    {
+                        scrollDelta *= EDGE_SCROLL_RECOIL_DAMP;
+                    }
+                    scrollDelta = ApplyScrollWithLimit(scrollDelta);
                     adsTargetOffsetZ += scrollDelta;
                 }
                 
@@ -628,6 +669,12 @@ namespace ScopeSensitivity
                     LogAdsDebug($"SetAdsOffset[{adsLogFrameCount}]: Gun={gunName}, Factor={gunFactor:F2}, AdsValue={currentAdsValue:F3}, MouseDelta={gameMouseDelta}, TargetOffset=({targetOffsetX:F3},{targetOffsetZ:F3}), StartOffset=({adsStartOffsetX:F3},{adsStartOffsetZ:F3}), MaxOffset={currentMaxOffset:F3}, DistanceFactor={distanceFactor:F3}, AimPoint={currentAimPoint}, AimScreen={currentAimScreen}, MousePos={currentMousePos}");
                     LogGameCameraState(gameCamera, inputManager, $"SetAdsOffset[{adsLogFrameCount}]");
                     adsLogFrameCount++;
+                }
+
+                // 每帧递减抑制计数器
+                if (recoilSuppressTimer > 0f)
+                {
+                    recoilSuppressTimer -= Time.deltaTime;
                 }
             }
             catch (Exception ex)
