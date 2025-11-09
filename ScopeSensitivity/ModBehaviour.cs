@@ -64,15 +64,16 @@ namespace ScopeSensitivity
         private float adsStartOffsetX = 0f;
         private float adsStartOffsetZ = 0f;
         
-        // 开镜开始时的 aimOffsetDistanceFactor（固定使用，避免开镜过程中变化导致漂移）
-        private float adsStartDistanceFactor = 1f;
-        
-        // 开镜开始时的最大偏移距离（固定使用，避免开镜过程中变化导致限制不一致）
-        private float adsStartMaxOffset = 25f;
-
         // 开镜开始时的瞄准点（用于保持退出开镜时的瞄准方向）
         private Vector3 adsStartAimPoint = Vector3.zero;
         private Vector2 adsStartAimScreenPoint = Vector2.zero;
+
+        // 调试辅助
+        private bool adsEnterLogged = false;
+        private bool adsExitLogged = false;
+        private int adsLogFrameCount = 0;
+        // 长期日志计数（每 60 帧输出一次，便于观察连续拖拽）
+        private int adsLongLogFrameCount = 0;
         
         // 边缘滚动配置
         private float edgeScrollThreshold = 0.8f;   // 距离中心多远开始滚动
@@ -82,6 +83,8 @@ namespace ScopeSensitivity
         {
             // 缓存反射信息
             CacheReflectionInfo();
+
+            Debug.Log("[ScopeSensitivity] ModBehaviour.Start executed. reflectionCached=" + reflectionCached + ", gameCameraReflectionCached=" + gameCameraReflectionCached);
         }
         
 
@@ -391,22 +394,6 @@ namespace ScopeSensitivity
                     adsStartOffsetX = adsTargetOffsetX;
                     adsStartOffsetZ = adsTargetOffsetZ;
                     
-                    // 记录开镜开始时的 aimOffsetDistanceFactor（防止开镜过程中变化）
-                    adsStartDistanceFactor = (float)(aimOffsetDistanceFactorField?.GetValue(gameCamera) ?? 1f);
-                    
-                    // 计算开镜完成后的最大偏移距离（基于武器的 ADSAimDistanceFactor）
-                    // 游戏公式：maxAimOffset = defaultAimOffset * gun.ADSAimDistanceFactor（完全开镜时）
-                    var gun = player.GetGun();
-                    if (gun != null)
-                    {
-                        const float defaultAimOffset = 5f; // 游戏中的默认值
-                        adsStartMaxOffset = defaultAimOffset * gun.ADSAimDistanceFactor;
-                    }
-                    else
-                    {
-                        adsStartMaxOffset = 25f; // 无武器时的默认值
-                    }
-                    
                     // 保存原始 lerpSpeed
                     if (lerpSpeedField != null)
                     {
@@ -419,6 +406,19 @@ namespace ScopeSensitivity
 
                     adsStartAimPoint = inputManager.InputAimPoint;
                     adsStartAimScreenPoint = inputManager.AimScreenPoint;
+
+                    if (!adsEnterLogged)
+                    {
+                        var logGun = player.GetGun();
+                        string gunName = logGun != null ? logGun.name : "null";
+                        float gunFactor = logGun != null ? logGun.ADSAimDistanceFactor : -1f;
+                        float currentMaxOffset = (float)(maxAimOffsetField?.GetValue(gameCamera) ?? 0f);
+                        float currentDistanceFactor = (float)(aimOffsetDistanceFactorField?.GetValue(gameCamera) ?? 0f);
+                        float currentLerpSpeed = (float)(lerpSpeedField?.GetValue(gameCamera) ?? -1f);
+                        LogAdsDebug($"进入ADS: Gun={gunName}, Factor={gunFactor:F2}, StartOffset=({adsTargetOffsetX:F2},{adsTargetOffsetZ:F2}), AimPoint={adsStartAimPoint}, AimScreen={adsStartAimScreenPoint}, LerpSpeed={currentLerpSpeed}, CamMaxOffset={currentMaxOffset:F2}, CamDistanceFactor={currentDistanceFactor:F2}");
+                        LogGameCameraState(gameCamera, inputManager, "进入ADS");
+                        adsEnterLogged = true;
+                    }
                 }
                 catch (Exception ex)
                 {
@@ -426,12 +426,40 @@ namespace ScopeSensitivity
                 }
                 
                 isAdsTransitioning = true;
+                adsExitLogged = false;
+                adsLogFrameCount = 0;
             }
             
             // 检测关闭瞄准镜：AdsValue 回到接近 0
             if (isAdsTransitioning && currentAdsValue < 0.01f)
             {
+                if (!adsExitLogged)
+                {
+                    try
+                    {
+                        GameCamera? gameCameraExit = LevelManager.Instance?.GameCamera;
+                        InputManager? inputManagerExit = LevelManager.Instance?.InputManager;
+                        var gun = player.GetGun();
+                        string gunName = gun != null ? gun.name : "null";
+                        float currentOffsetX = gameCameraExit != null ? (float)(offsetFromTargetXField?.GetValue(gameCameraExit) ?? 0f) : 0f;
+                        float currentOffsetZ = gameCameraExit != null ? (float)(offsetFromTargetZField?.GetValue(gameCameraExit) ?? 0f) : 0f;
+                        Vector3 currentAimPoint = player.GetCurrentAimPoint();
+                        LogAdsDebug($"退出ADS: Gun={gunName}, Offset=({currentOffsetX:F2},{currentOffsetZ:F2}), AimPoint={currentAimPoint}");
+                        if (gameCameraExit != null && inputManagerExit != null)
+                        {
+                            LogGameCameraState(gameCameraExit, inputManagerExit, "退出ADS");
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        Debug.LogError($"[ScopeSensitivity调试] 记录 ADS 结束信息失败: {ex.Message}");
+                    }
+                    adsExitLogged = true;
+                }
+
                 isAdsTransitioning = false;
+                adsEnterLogged = false;
+                adsLogFrameCount = 0;
             }
             
             lastAdsValue = currentAdsValue;
@@ -443,12 +471,20 @@ namespace ScopeSensitivity
             InputManager? inputManager = LevelManager.Instance?.InputManager;
             if (gameCamera == null || inputManager == null || !isAdsTransitioning)
             {
+                if (isAdsTransitioning && !adsEnterLogged)
+                {
+                    LogAdsDebug("SetAdsOffset: GameCamera 或 InputManager 未准备好，无法更新");
+                }
                 return;
             }
             
             float currentAdsValue = player.AdsValue;
             if (currentAdsValue <= 0.01f)
             {
+                if (adsLogFrameCount == 0)
+                {
+                    LogAdsDebug($"SetAdsOffset: AdsValue={currentAdsValue:F3}，跳过更新");
+                }
                 return;
             }
             
@@ -460,12 +496,15 @@ namespace ScopeSensitivity
                 float beforeMaxAimOffset = (float)(maxAimOffsetField?.GetValue(gameCamera) ?? 0f);
                 float beforeDistanceFactor = (float)(aimOffsetDistanceFactorField?.GetValue(gameCamera) ?? 0f);
                 
-                // 使用开镜开始时计算的固定最大偏移距离（不再动态读取，避免开镜过程中变化导致限制问题）
-                
                 // 使用游戏归一化的增量
                 CharacterInputControl inputControl = CharacterInputControl.Instance;
                 Vector2 gameMouseDelta = (Vector2)(mouseDeltaField?.GetValue(inputControl) ?? Vector2.zero);
-                float velocityScale = 0.01f * adsStartDistanceFactor;
+                float currentDistanceFactor = (float)(aimOffsetDistanceFactorField?.GetValue(gameCamera) ?? 1f);
+                if (Mathf.Abs(currentDistanceFactor) < 0.0001f)
+                {
+                    currentDistanceFactor = 0.0001f;
+                }
+                float velocityScale = 0.01f * currentDistanceFactor;
                 
                 adsTargetOffsetX += gameMouseDelta.x * velocityScale;
                 adsTargetOffsetZ += gameMouseDelta.y * velocityScale;
@@ -501,15 +540,31 @@ namespace ScopeSensitivity
                 float targetOffsetZ = adsTargetOffsetZ;
                 
                 // 限制偏移距离在最大范围内（保持和游戏原本的视野范围一致）
-                float currentOffsetMagnitude = Mathf.Sqrt(targetOffsetX * targetOffsetX + targetOffsetZ * targetOffsetZ);
-                if (currentOffsetMagnitude > adsStartMaxOffset)
+                float currentMaxOffset = (float)(maxAimOffsetField?.GetValue(gameCamera) ?? 25f);
+                // 通过插值到固定上限 (HighScopeMaxOffset=24)，让 4.24 倍镜约 50m，低倍镜保持原值
+                const float HIGH_SCOPE_MAX_OFFSET = 22f; // 经验值: ~52m
+                var currentGun = player.GetGun();
+                float gunFactorLocal = currentGun != null ? currentGun.ADSAimDistanceFactor : 1f;
+                float tHigh = Mathf.InverseLerp(TWO_SCOPE_FACTOR_THRESHOLD, 4.24f, gunFactorLocal);
+                float extendedMaxOffset = Mathf.Lerp(currentMaxOffset, HIGH_SCOPE_MAX_OFFSET, tHigh);
+                if (Mathf.Abs(extendedMaxOffset - currentMaxOffset) > 0.001f && maxAimOffsetField != null)
                 {
-                    float scale = adsStartMaxOffset / currentOffsetMagnitude;
-                    targetOffsetX *= scale;
-                    targetOffsetZ *= scale;
-                    
-                    // 同时也更新基准偏移，避免累积超出范围
+                    maxAimOffsetField.SetValue(gameCamera, extendedMaxOffset);
+                }
+                currentMaxOffset = extendedMaxOffset;
+                if (currentMaxOffset < 0.0001f)
+                {
+                    currentMaxOffset = Mathf.Max(Mathf.Abs(beforeMaxAimOffset), 0.0001f);
+                }
+                // 分轴独立钳制：各轴各自限制到 ±currentMaxOffset，解决对角抖动
+                if (Mathf.Abs(targetOffsetX) > currentMaxOffset)
+                {
+                    targetOffsetX = Mathf.Clamp(targetOffsetX, -currentMaxOffset, currentMaxOffset);
                     adsTargetOffsetX = targetOffsetX;
+                }
+                if (Mathf.Abs(targetOffsetZ) > currentMaxOffset)
+                {
+                    targetOffsetZ = Mathf.Clamp(targetOffsetZ, -currentMaxOffset, currentMaxOffset);
                     adsTargetOffsetZ = targetOffsetZ;
                 }
                 
@@ -518,15 +573,15 @@ namespace ScopeSensitivity
                 offsetFromTargetZField?.SetValue(gameCamera, targetOffsetZ);
 
                 // 同步 InputManager 与角色的瞄准点，避免退出开镜时发生回弹
-                float distanceFactor = Mathf.Max(adsStartDistanceFactor, 0.0001f);
+                float distanceFactor = currentDistanceFactor;
                 Vector3 aimPoint = adsStartAimPoint;
 
                 if (cameraRightVectorField != null && cameraForwardVectorField != null)
                 {
                     Vector3 cameraRight = (Vector3)(cameraRightVectorField.GetValue(gameCamera) ?? Vector3.right);
                     Vector3 cameraForward = (Vector3)(cameraForwardVectorField.GetValue(gameCamera) ?? Vector3.forward);
-                    Vector3 aimOffset = cameraRight * ((targetOffsetX - adsStartOffsetX) / distanceFactor) +
-                                        cameraForward * ((targetOffsetZ - adsStartOffsetZ) / distanceFactor);
+                    Vector3 aimOffset = cameraRight * (targetOffsetX - adsStartOffsetX) +
+                                        cameraForward * (targetOffsetZ - adsStartOffsetZ);
 
                     // 保持瞄准平面高度一致
                     aimPoint = adsStartAimPoint + aimOffset;
@@ -547,14 +602,50 @@ namespace ScopeSensitivity
                     Vector2 aimScreenPoint2D = new Vector2(aimScreenPoint.x, aimScreenPoint.y);
 
                     aimScreenPointField?.SetValue(inputManager, aimScreenPoint2D);
-                    aimMousePosCacheField?.SetValue(inputManager, aimScreenPoint2D);
-                    inputManager.SetMousePosition(aimScreenPoint2D);
+                }
+
+                // 额外每 60 帧记录一次关键参数，便于持续观察最远瞄准距离限制情况
+                adsLongLogFrameCount++;
+                if (adsLongLogFrameCount % 60 == 0)
+                {
+                    float offsetMagnitude = Mathf.Sqrt(targetOffsetX * targetOffsetX + targetOffsetZ * targetOffsetZ);
+                    float worldOffsetMagnitude = Vector3.Distance(aimPoint, adsStartAimPoint);
+                    var gunLong = player.GetGun();
+                    float gunFactorLong = gunLong != null ? gunLong.ADSAimDistanceFactor : -1f;
+                    Vector3 muzzlePos = gunLong != null ? gunLong.muzzle.position : Vector3.zero;
+                    float aimDistance = Vector3.Distance(aimPoint, muzzlePos);
+                    LogAdsDebug($"[LongLog] Frame={adsLongLogFrameCount}, GunFactor={gunFactorLong:F2}, OffsetMag={offsetMagnitude:F3}/{currentMaxOffset:F3}, WorldOffsetMag={worldOffsetMagnitude:F3}, AimDist={aimDistance:F3}, DistanceFactor={distanceFactor:F3}");
+                }
+
+                if (adsLogFrameCount < 5)
+                {
+                    Vector3 currentAimPoint = inputManager.InputAimPoint;
+                    Vector2 currentAimScreen = inputManager.AimScreenPoint;
+                    Vector2 currentMousePos = inputManager.MousePos;
+                    var gun = player.GetGun();
+                    string gunName = gun != null ? gun.name : "null";
+                    float gunFactor = gun != null ? gun.ADSAimDistanceFactor : -1f;
+                    LogAdsDebug($"SetAdsOffset[{adsLogFrameCount}]: Gun={gunName}, Factor={gunFactor:F2}, AdsValue={currentAdsValue:F3}, MouseDelta={gameMouseDelta}, TargetOffset=({targetOffsetX:F3},{targetOffsetZ:F3}), StartOffset=({adsStartOffsetX:F3},{adsStartOffsetZ:F3}), MaxOffset={currentMaxOffset:F3}, DistanceFactor={distanceFactor:F3}, AimPoint={currentAimPoint}, AimScreen={currentAimScreen}, MousePos={currentMousePos}");
+                    LogGameCameraState(gameCamera, inputManager, $"SetAdsOffset[{adsLogFrameCount}]");
+                    adsLogFrameCount++;
                 }
             }
             catch (Exception ex)
             {
                 Debug.LogError($"[ScopeSensitivity调试] 接管准星时出错: {ex.Message}");
             }
+        }
+
+        private void LogGameCameraState(GameCamera gameCamera, InputManager inputManager, string tag)
+        {
+            // logging disabled for release build
+            return;
+        }
+
+        private void LogAdsDebug(string message)
+        {
+            // logging disabled for release build
+            return;
         }
     }
 }
