@@ -81,17 +81,6 @@ excess = (|normalizedPos| - 0.8) / 0.2  // 超出阈值的比例
 scrollDelta = sign(normalizedPos) × excess² × 50 × deltaTime
 ```
 
-#### 3.4 回拉跟随
-
-当准星往回移动时（朝向中心方向），镜头加速跟随，方便快速调整视野：
-- **触发条件**：镜头有明显偏移（>0.1）且鼠标移动方向与偏移方向相反
-- **水平回拉**：速度放大 5 倍
-- **竖直回拉**：速度放大 8 倍（考虑到竖直方向调整需求更迫切）
-
-**判断逻辑**：
-- X轴回拉：`(offsetX > 0 && velocityX < 0) || (offsetX < 0 && velocityX > 0)`
-- Z轴回拉：`(offsetZ > 0 && velocityY < 0) || (offsetZ < 0 && velocityY > 0)`
-
 #### 3.5 镜头移动范围限制
 
 限制镜头偏移在圆形区域内，与原游戏不同倍镜的视野范围保持一致：
@@ -145,9 +134,6 @@ if (currentMagnitude > maxAimOffset) {
 - **鼠标跟随速度系数**：0.005
 - **边缘滚动阈值**：0.8（归一化位置）
 - **边缘滚动速度**：50 units/秒
-- **水平回拉倍率**：5.0
-- **竖直回拉倍率**：8.0
-- **回拉触发偏移**：0.1（最小偏移距离）
 - **最大偏移计算**：5 × ADSAimDistanceFactor
 
 ## 技术细节
@@ -218,11 +204,6 @@ if (currentMagnitude > maxAimOffset) {
    - 计算鼠标归一化位置：`normalizedPos = (mousePos - center) / (size / 2)`
    - 超出阈值时计算增量：`scrollDelta = sign × excess² × speed × deltaTime`
    - 使用平方曲线让加速更自然
-
-4. **回拉跟随**：
-   - 分别判断X和Z轴的回拉状态
-   - 回拉时速度系数放大：水平5倍，竖直8倍
-   - 只在有明显偏移时（>0.1）触发，避免中心附近抖动
 
 5. **范围限制**：
    - 开镜开始时预计算最大偏移：`maxOffset = 5 × gun.ADSAimDistanceFactor`
