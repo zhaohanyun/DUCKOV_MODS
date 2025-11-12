@@ -558,8 +558,8 @@ namespace ScopeSensitivity
                     if (suppressEdgeByRecoil)
                     {
                         scrollDelta *= EDGE_SCROLL_RECOIL_DAMP; // 强力衰减
+                        scrollDelta = ApplyScrollWithLimit(scrollDelta);
                     }
-                    scrollDelta = ApplyScrollWithLimit(scrollDelta);
                     adsTargetOffsetX += scrollDelta;
                 }
 
@@ -571,8 +571,8 @@ namespace ScopeSensitivity
                     if (suppressEdgeByRecoil)
                     {
                         scrollDelta *= EDGE_SCROLL_RECOIL_DAMP;
+                        scrollDelta = ApplyScrollWithLimit(scrollDelta);
                     }
-                    scrollDelta = ApplyScrollWithLimit(scrollDelta);
                     adsTargetOffsetZ += scrollDelta;
                 }
                 
